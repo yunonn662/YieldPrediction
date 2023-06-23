@@ -1,0 +1,68 @@
+// Download Climate Data (Rainfall) from 1981 - 2022 using Earth Engine
+
+// 1. Define countries boundary layer
+var Countries = ee.FeatureCollection('USDOS/LSIB_SIMPLE/2017');
+var countriesList = Countries.aggregate_array('country_na');
+var roi = Countries.filter(ee.Filter.eq('country_na', 'Uganda'));
+Map.addLayer(roi, {}, "roi");
+Map.centerObject(roi);
+
+// 2. List of years
+var years = ee.List.sequence(1981, 2022);
+var months = ee.List.sequence(1, 12);
+
+// 3. Load Rainfall 
+var rainfall = ee.ImageCollection("UCSB-CHG/CHIRPS/PENTAD").select("precipitation"); 
+print(rainfall.first());
+
+// 4. Set visualization parameter
+var rainfall_Vis = {
+  min: 1.0,
+  max: 17.0,
+  palette: ['0300ff', '418504', 'efff07', 'efff07', 'ff0303'],
+};
+// 5. Center and add rainfall layer
+Map.setCenter(17, 13, 2); // Zoom level ranges from 1 to 16
+Map.addLayer(rainfall.mean(), rainfall_Vis, 'Rainfall');
+
+// 6. Loop over each country and append annual rainfall data
+var dataset = ee.FeatureCollection([]);
+countriesList.evaluate(function(countries) {
+  for (var i = 0; i < countries.length; i++) {
+    var countryName = countries[i];
+    var countryBoundary = Countries.filter(ee.Filter.eq('country_na', countryName));
+    
+    var annualImages = years.map(function(year) {
+      var filtered = rainfall
+        .filter(ee.Filter.calendarRange(year, year, 'year'))
+        .filterBounds(countryBoundary);
+      var annual = filtered.sum();
+      return annual.set('year', year).set('country_na', countryName);
+    });
+    
+    var annualCol = ee.ImageCollection.fromImages(annualImages);
+    var rainfallStats = annualCol.map(function(img) {
+      var stats = img.reduceRegions({
+        collection: countryBoundary,
+        reducer: ee.Reducer.mean(),
+        scale: 1000
+      });
+      return stats.map(function(f) {
+        return f.set('year', img.get('year')).set('country_na', countryName);
+      });
+    }).flatten();
+    
+    dataset = dataset.merge(rainfallStats);
+  }
+  
+  // 7. Export the resulting dataset as a table to Google Drive
+  var selectors = "year, country_na, mean";
+  Export.table.toDrive({
+    collection: dataset,
+    description: 'Annual_Rainfall_by_Country', 
+    folder: 'earth_engine_data', 
+    fileNamePrefix: 'Annual_Rainfall_by_Country', 
+    fileFormat: 'CSV',
+    selectors: selectors
+  });
+});
